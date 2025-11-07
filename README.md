@@ -37,7 +37,6 @@ and cross‑process contracts — consistently, everywhere.
 - [Troubleshooting & FAQ](#troubleshooting--faq)
 - [Design Principles](#design-principles)
 - [Project Status & Versioning](#project-status--versioning)
-- [License](#license)
 
 ---
 
