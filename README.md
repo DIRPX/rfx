@@ -1,99 +1,82 @@
-# rfx — Global Type-to-Name Resolver
+# rfx — Global Type-to-Name Resolver for Go
 
-`rfx` is a lightweight, reflection-aware identity resolution layer for Go.  
-It provides a process-wide mechanism for mapping Go values and types to **stable, human-readable names** — suitable for logs, metrics, audit trails, and policy engines.
+`rfx` is a lightweight, reflection‑aware identity layer that maps Go **types/values → stable names**.
+Use it to get canonical, human‑readable identifiers for logging, metrics, policies, audit trails,
+and cross‑process contracts — consistently, everywhere.
 
-> **Goal:** unify how DIRPX components identify and describe entities across distributed binaries.
-
----
-
-## ✳️ Motivation
-
-Distributed systems often need a consistent way to **name** objects:
-- `"authn.jwt"`, `"cache.entry"`, `"routing.policy"`, `"node.metrics"`, etc.  
-Hard-coded strings are brittle and inconsistent; `reflect.TypeOf` is unstable across packages;  
-and embedding names in structs scatters logic everywhere.
-
-`rfx` solves this by providing a single, concurrent-safe, reflection-driven registry and resolver with clear semantics and no runtime locks on reads.
+> **Goal:** one source of truth for entity names across all DIRPX components and services.
 
 ---
 
-## 🧩 Design Overview
+## Table of Contents
 
-At runtime, `rfx` holds a **global immutable snapshot** (`state`) published atomically:
-
-| Component    | Responsibility                                                       | Typical Implementation |
-|--------------|----------------------------------------------------------------------|------------------------|
-| **Config**   | Normalization rules for names (unwrap depth, builtin handling, etc.) | `apis.Config`          |
-| **Registry** | Explicit map of Go types → string names                              | `apis.Registry`        |
-| **Resolver** | Strategy chain that computes a name from a value or type             | `apis.Resolver`        |
-| **Builder**  | Factory that constructs a new Registry and Resolver                  | `apis.Builder`         |
-| **Strategy** | Strategy logic for Resolver chain                                    | `apis.Strategy`        |
-| **Ext**      | Opaque extension payload for custom builders                         | `any`                  |
-
-Reads use `atomic.Pointer` → zero locks.  
-Writes (`SetConfig`, `SetBuilder`, etc.) build a new snapshot → atomic swap.
-
----
-
-## ⚙️ Resolution Order
-
-When resolving a name, the global `Resolver` applies strategies in order:
-
-1. **Namer interface** — if a value implements `apis.Namer`, use its `EntityName()` method.  
-   ```go
-   type Namer interface { EntityName() string }
-   ```
-2. **Registry lookup** — if the type is explicitly registered, use that name.
-3. **Reflect fallback** — derive `"pkg.Type"` name using normalization rules.
-
-This guarantees a stable, canonical string for any Go type or value.
-
----
-
-## 🧠 Concurrency Model
-
-- **Reads are lock-free.**  
-  `Entity()`, `EntityType()`, `Registry()`, and `Resolver()` simply load the current state atomically.
-
-- **Writes are serialized.**  
-  Updates (`SetConfig`, `SetBuilder`, `SetExt`, etc.) take a short build mutex, construct new layers if needed, and publish a new snapshot via atomic swap.
-
-- **Pinning:**  
-  - `SetRegistry()` and `SetResolver()` *pin* their respective layers to prevent rebuilds.  
-  - Use `UnpinRegistry()` / `UnpinResolver()` to make them mutable again.
+- [Why rfx](#why-rfx)
+- [Key Ideas](#key-ideas)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Concepts & Architecture](#concepts--architecture)
+  - [Registry](#registry)
+  - [Resolver](#resolver)
+  - [Builder](#builder)
+  - [Config](#config)
+  - [Snapshot & Pins](#snapshot--pins)
+- [Resolution Order](#resolution-order)
+- [Usage Patterns](#usage-patterns)
+  - [Manual Registration](#manual-registration)
+  - [Custom Names via Interface](#custom-names-via-interface)
+  - [Pure Reflection Fallback](#pure-reflection-fallback)
+  - [Bulk Diagnostics](#bulk-diagnostics)
+- [Concurrency Model](#concurrency-model)
+- [API Reference](#api-reference)
+- [Advanced Topics](#advanced-topics)
+  - [Custom Builder](#custom-builder)
+  - [Using Extensions (`Ext`)](#using-extensions-ext)
+  - [Testing & Determinism](#testing--determinism)
+  - [Performance Notes](#performance-notes)
+- [Examples](#examples)
+- [Troubleshooting & FAQ](#troubleshooting--faq)
+- [Design Principles](#design-principles)
+- [Project Status & Versioning](#project-status--versioning)
+- [License](#license)
 
 ---
 
-## 🔧 Public API (summary)
+## Why rfx
 
-```go
-// Read helpers
-rfx.Entity(v any) string
-rfx.EntityType(t reflect.Type) string
-rfx.Registry() apis.Registry
-rfx.Resolver() apis.Resolver
+Distributed systems need consistent **names** for things: `authn.jwt`, `cache.entry`, `routing.policy`,
+`node.metrics`, etc. String literals are brittle; `reflect.TypeOf` names vary with packages and build graph;
+embedding ad‑hoc names in structs scatters logic across the codebase.
 
-// Mutation helpers
-rfx.SetConfig(cfg apis.Config)
-rfx.SetBuilder(b apis.Builder)
-rfx.SetExt(ext any)
-rfx.SetRegistry(reg apis.Registry)
-rfx.SetResolver(res apis.Resolver)
-rfx.UnpinRegistry()
-rfx.UnpinResolver()
-rfx.SetAll(cfg *apis.Config, ext any, reg apis.Registry, res apis.Resolver, b apis.Builder)
+`rfx` centralizes naming:
+- a single **registry** for explicit mappings,
+- a pluggable **resolver** chain (interface → registry → reflection),
+- an atomic **snapshot** published process‑wide for lock‑free reads.
 
-// Extension helpers
-rfx.ExtAs[T]() (T, bool)
+The result is predictable, debuggable, and fast.
+
+---
+
+## Key Ideas
+
+- **Stable identity**: the same type/value resolves to the same canonical string every time.
+- **Zero locks on reads**: resolution is a simple atomic load + pure functions.
+- **Replaceable strategy**: swap a `Builder` to change the resolution policy globally.
+- **Minimal surface**: only naming — _not_ DI, _not_ wire codecs, _not_ discovery.
+- **Test‑friendly**: whole‑system reset in a single call (`SetAll`), mockable interfaces.
+
+---
+
+## Installation
+
+```bash
+go get dirpx.dev/rfx@latest
 ```
 
-All setters rebuild **only unpinned layers** using the current `Builder` and `Ext`.  
-`SetAll` acts as a **hard reset**, ignoring pins — mostly used in tests.
+> `rfx` is a standalone package. It depends only on the Go standard library.
 
 ---
 
-## 🧩 Example
+## Quick Start
 
 ```go
 package main
@@ -101,175 +84,302 @@ package main
 import (
 	"fmt"
 	"reflect"
+
 	"dirpx.dev/rfx"
 )
 
-type MyType struct{}
-
-// Custom naming via interface
-func (MyType) EntityName() string { return "custom.type" }
+type Order struct{}
+func (Order) EntityName() string { return "sales.order" } // optional interface
 
 func main() {
-	// Register a type manually (optional)
-	rfx.Registry().Register(reflect.TypeOf(MyType{}), "mytype.registered")
+	// 1) Optional explicit registration
+	rfx.Registry().Register(reflect.TypeOf(Order{}), "sales.order.type")
 
-	// Simple resolution
-	fmt.Println(rfx.Entity(MyType{}))          // → "custom.type"
-	fmt.Println(rfx.EntityType(reflect.TypeOf(MyType{}))) // → "mytype.registered"
+	// 2) Resolve by value (uses EntityName() if present)
+	fmt.Println(rfx.Entity(Order{})) // "sales.order"
 
-	// Change config at runtime (rebuilds resolver & registry)
-	cfg := rfx.Registry().Entries() // diagnostic
-	fmt.Println("registered entries:", len(cfg))
+	// 3) Resolve by reflect.Type (uses registry or fallback)
+	fmt.Println(rfx.EntityType(reflect.TypeOf(Order{}))) // "sales.order.type" (from registry)
+
+	// 4) Introspect current registry
+	entries := rfx.Registry().Entries()
+	fmt.Println("registered entries:", len(entries))
 }
 ```
 
 ---
 
-## 🧱 Builder Responsibilities
+## Concepts & Architecture
 
-`Builder` defines how registries and resolvers are (re)built:
+At runtime, `rfx` holds a **global immutable snapshot** with five pieces:
+
+```
++------------------------------+
+| Config  | Ext | Registry | Resolver | Builder | PinFlags |
++------------------------------+
+               │
+        atomic.Store(*state)
+               ▼
+     process-global pointer
+```
+
+Updates rebuild missing layers and atomically swap the snapshot; readers always see a consistent view.
+
+### Registry
+
+Explicit mapping **Go type → name**; typically used for core types that must have fixed identities.
+
+Minimal interface (illustrative):
+```go
+type Registry interface {
+	Register(t reflect.Type, name string)
+	Lookup(t reflect.Type) (name string, ok bool)
+	Entries() map[reflect.Type]string // diagnostic copy
+}
+```
+
+### Resolver
+
+Computes a name from a value or type using a chain of **strategies** (see [Resolution Order](#resolution-order)).
+
+### Builder
+
+Factory that constructs `Registry` and `Resolver` when the snapshot needs rebuilding:
 
 ```go
 type Builder interface {
-    BuildRegistry(cfg Config, prev Registry, ext any) Registry
-    BuildResolver(cfg Config, reg Registry, prev Resolver, ext any) Resolver
+	BuildRegistry(cfg Config, prev Registry, ext any) Registry
+	BuildResolver(cfg Config, reg Registry, prev Resolver, ext any) Resolver
 }
 ```
 
-- `cfg` — current configuration (always normalized via `config.New()`).
-- `prev` — previous instance (may be reused or migrated).
-- `ext` — user-defined extension payload.
-- `rfx`’s default builder composes three strategies:
-  1. `NamerStrategy`
-  2. `RegistryStrategy`
-  3. `ReflectStrategy`
+Switch builders to change global policy.
 
-You can inject your own builder to alter resolution rules globally.
+### Config
+
+Normalization and policy flags for the resolver (e.g., how to unwrap pointers, whether to include package path, etc.).
+Provided by `rfx.SetConfig` and stored in the snapshot.
+
+### Snapshot & Pins
+
+- `SetRegistry` / `SetResolver` **pin** the provided instances (they won’t be rebuilt automatically).
+- `UnpinRegistry` / `UnpinResolver` clear those pins.
+- `SetAll` resets everything in one go — great for tests.
 
 ---
 
-## 🧩 Ext Configuration
+## Resolution Order
 
-`ext` is an **opaque context** stored in the global snapshot.  
-It is **not** interpreted by `rfx`; it is simply passed to the builder on every rebuild.
+The resolver tries, in order:
 
-Typical uses:
-- Custom naming policies (e.g., prefixing names per subsystem)
-- Tenant or environment identifiers
-- Context for plugins that hook into registry/resolver construction
+1. **Namer interface** — if a value implements:
+   ```go
+   type Namer interface { EntityName() string }
+   ```
+   then use that string.
+
+2. **Registry lookup** — if the (possibly unwrapped) `reflect.Type` is registered, use it.
+
+3. **Reflection fallback** — derive `"pkg.Type"` using `Config` rules (stable canonicalization).
+
+This makes the default behavior sensible while keeping escape hatches obvious.
+
+---
+
+## Usage Patterns
+
+### Manual Registration
 
 ```go
-type MyExt struct {
-    Prefix string
+t := reflect.TypeOf((*MyInterface)(nil)).Elem()
+rfx.Registry().Register(t, "feature.my_interface")
+```
+
+### Custom Names via Interface
+
+```go
+type Job struct { Kind string }
+func (j Job) EntityName() string { return "batch.job." + j.Kind }
+fmt.Println(rfx.Entity(Job{Kind: "reindex"})) // "batch.job.reindex"
+```
+
+### Pure Reflection Fallback
+
+If you do nothing, `rfx` will derive a stable `"pkg.Type"` name. This is useful for quick diagnostics and when you don’t want to commit to explicit names yet.
+
+### Bulk Diagnostics
+
+```go
+for t, name := range rfx.Registry().Entries() {
+	fmt.Printf("%s => %s\n", t.String(), name)
+}
+```
+
+---
+
+## Concurrency Model
+
+- **Reads:** lock‑free (`atomic.Pointer` load + pure resolution). Safe under heavy parallelism.
+- **Writes:** short critical section to build a new snapshot; atomic swap publishes it.
+- **No tearing:** readers never see partially applied updates.
+
+Example:
+```go
+// Readers
+go func() {
+	for i := 0; i < 1_000_000; i++ {
+		_ = rfx.EntityType(reflect.TypeOf(Order{}))
+	}
+}()
+
+// Occasional config reload
+go func() {
+	rfx.SetConfig(loadConfigFromFile())
+}()
+```
+
+---
+
+## API Reference
+
+High‑level helpers:
+```go
+// Resolution
+func Entity(v any) string
+func EntityType(t reflect.Type) string
+
+// Introspection
+func Registry() Registry
+func Resolver() Resolver
+
+// Snapshot mutation
+func SetConfig(cfg Config)
+func SetBuilder(b Builder)
+func SetExt(ext any)
+func SetRegistry(reg Registry)
+func SetResolver(res Resolver)
+func UnpinRegistry()
+func UnpinResolver()
+func SetAll(cfg *Config, ext any, reg Registry, res Resolver, b Builder)
+
+// Extensions
+func ExtAs[T any]() (T, bool)
+```
+
+> Functions above delegate to the current snapshot. Only unpinned layers are rebuilt when you call a `Set*` method.
+
+---
+
+## Advanced Topics
+
+### Custom Builder
+
+Provide a different strategy chain or registry implementation:
+
+```go
+type MyBuilder struct{}
+
+func (MyBuilder) BuildRegistry(cfg rfx.Config, prev rfx.Registry, ext any) rfx.Registry {
+	// reuse prev or wrap it with additional behavior
+	return prev
+}
+func (MyBuilder) BuildResolver(cfg rfx.Config, reg rfx.Registry, prev rfx.Resolver, ext any) rfx.Resolver {
+	// compose strategies in a custom order
+	return NewMyResolverChain(reg, cfg)
 }
 
-rfx.SetExt(MyExt{Prefix: "tenant-a"})
+rfx.SetBuilder(MyBuilder{})
 ```
 
-Your custom `Builder` can then downcast `ext.(MyExt)` and apply the prefix.
+### Using Extensions (`Ext`)
 
----
-
-## 🧵 Concurrency Example
+Opaque payload carried in the snapshot — accessible to your `Builder`:
 
 ```go
-// Safe concurrent reads
-go func() {
-    for {
-        _ = rfx.EntityType(reflect.TypeOf(MyType{}))
-    }
-}()
-
-// Configuration reload
-go func() {
-    for {
-        rfx.SetConfig(newConfig())
-    }
-}()
+type NamingExt struct{ Prefix string }
+rfx.SetExt(NamingExt{Prefix: "tenant-a"})
+// Builder can downcast and prepend Prefix to all names it constructs.
 ```
 
-All readers observe a consistent snapshot; no races or partial updates.
+Retrieve in tests or tooling:
+```go
+if ext, ok := rfx.ExtAs[NamingExt](); ok {
+	fmt.Println(ext.Prefix)
+}
+```
 
----
-
-## 🧪 Testing Utilities
-
-For deterministic tests:
+### Testing & Determinism
 
 ```go
-// Replace everything in one call
-rfx.SetAll(&testCfg, nil, nil, nil, builder.New())
+// One‑shot reset for isolation:
+rfx.SetAll(&cfg, nil, nil, nil, mybuilder)
 
-// Inject mock builder or registry
-rfx.SetBuilder(mockBuilder)
-rfx.SetRegistry(mockRegistry)
-rfx.SetResolver(mockResolver)
-rfx.UnpinRegistry()
-rfx.UnpinResolver()
+// Pin a mock registry:
+rfx.SetRegistry(mockReg)   // pinned
+rfx.UnpinRegistry()        // allow rebuild again
 ```
 
-Use `rfx.ExtAs[T]()` to fetch custom extension values inside tests.
+### Performance Notes
+
+- Resolution avoids allocations on the hot path.
+- No locks for readers; updates are rare and cheap.
+- Fallback naming uses memoized reflection where appropriate (implementation detail).
 
 ---
 
-## 🧩 Internal Snapshot Lifecycle
+## Examples
 
-```
-+-------------------------+
-|       state struct      |
-|-------------------------|
-| Config   → apis.Config  |
-| Ext      → any          |
-| Registry → apis.Registry|
-| Resolver → apis.Resolver|
-| Builder  → apis.Builder |
-| Pin flags (reg/res)     |
-+-------------------------+
+#### 1) Priorities in action
+```go
+type A struct{}
+func (A) EntityName() string { return "custom.A" }
 
-            │
-       atomic.Store
-            ▼
-    +-----------------+
-    |  st *state ptr  | ← global snapshot
-    +-----------------+
+rfx.Registry().Register(reflect.TypeOf(A{}), "registered.A")
+
+fmt.Println(rfx.Entity(A{}))                      // "custom.A"     (Namer wins)
+fmt.Println(rfx.EntityType(reflect.TypeOf(A{})))  // "registered.A" (Registry)
 ```
 
-Each `Set*()` call creates a new `state`, fills it with correct layers,  
-and swaps it in atomically. Old snapshots remain valid until GC.
+#### 2) Swapping policy at runtime
+```go
+// switch to a builder that always prefers registry over interface
+rfx.SetBuilder(builder.RegistryFirst{})
+```
+
+#### 3) Safe default without setup
+```go
+type X struct{}
+fmt.Println(rfx.Entity(X{})) // e.g. "your/module/path.X"
+```
 
 ---
 
-## 🧱 Why It Matters
+## Troubleshooting & FAQ
 
-DIRPX uses `rfx` as the backbone for type-identity across all sub-systems:
+**I’m getting different names across binaries. Why?**  
+Make sure all processes register the same types, and that the module path (used by reflection) is consistent. Prefer explicit registration for cross‑binary stability.
 
-- **dirpx-node**: labeling requests, plugin responses, cache entities.  
-- **dirpx-cp**: consistent audit logs and metrics for policies and routing.  
-- **dirpx-collector**: stable key generation for tracing and retention systems.  
+**Do I need to register every type?**  
+No. Register only important public entities. Others can rely on the fallback or the `Namer` interface.
 
-It ensures that no matter where a struct originates, it has the same canonical name everywhere.
+**What about generics, pointers, aliases?**  
+`Config` controls unwrapping and formatting rules. The default behaves sensibly, but you can swap it via `SetConfig` or customize a `Builder` to enforce your own policy.
 
----
-
-## 📜 License
-
-Apache 2.0  
-Copyright © 2025 DIRPX Authors.
+**Is this a DI container?**  
+No. `rfx` only resolves names; it does not construct values or manage lifecycles.
 
 ---
 
-## 🧭 Summary
+## Design Principles
 
-| Trait | Description                                                  |
-|-------|--------------------------------------------------------------|
-| **Thread safety** | Lock-free reads, atomic snapshot swaps                       |
-| **Extensibility** | Custom builders, custom extensions                           |
-| **Determinism** | Stable `"pkg.Type"` format for all types                     |
-| **Scope** | Naming only — not DI, not service discovery                  |
-| **Integration** | Used in all DIRPX binaries (`node`, `cp`, `collector`, etc.) |
+- **Single responsibility:** naming only, nothing more.
+- **Immutability by default:** publish immutable snapshots; never mutate in place.
+- **Open for extension:** pluggable builder and strategies.
+- **Predictable under load:** lock‑free reads, deterministic behavior.
 
 ---
 
-> “If everything has a name, nothing is anonymous — and that’s what makes distributed debugging possible.”
->
-> — DIRPX Core Philosophy
+## Project Status & Versioning
+
+- Status: **early but stable for internal use**. API surface is intentionally small.
+- Semver: breaking changes bump the major version. See releases for notes.
