@@ -2,5 +2,17 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/_old/reflectlab/go-json" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/_old/reflectlab/go-reflect" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/_old/reflectlab/go-reflector" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/_old/reflectlab/go-type-registry" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/_old/reflectlab/go-yaml" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/_old/reflectlab/mapstructure" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/_old/reflectlab/reflect2" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/_old/reflectlab/reflections" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/_old/reflectlab/schema" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/_old/reflectlab/tgo" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/_old/reflectlab/typeregistry" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/_old/reflectlab/validator" vcs="Git" />
   </component>
 </project>
