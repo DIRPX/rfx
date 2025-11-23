@@ -99,3 +99,68 @@ type Namer interface {
 	// binaries use the same naming scheme unless explicitly coordinated.
 	EntityName() string
 }
+
+// NamerFunc adapts a plain function to the Namer interface.
+//
+// # Overview
+//
+// NamerFunc is a convenience adapter that allows standalone functions with
+// signature `func() string` to satisfy the Namer interface. This is useful
+// when the entity name is naturally expressed as a function (for example,
+// when it must be computed, or when you want to pass naming behavior as a
+// dependency) rather than as a method on the entity type itself.
+//
+// Using NamerFunc does not change the semantics of Namer: the function is
+// still expected to return a stable, type-level canonical name that does not
+// depend on mutable instance state and remains stable across program
+// executions as long as the domain model is unchanged.
+//
+// # Usage
+//
+//	func userEntityName() string { return "domain.user" }
+//
+//	var namer Namer = NamerFunc(userEntityName)
+//	name := namer.EntityName() // "domain.user"
+//
+// # Contract
+//
+//   - A NamerFunc MUST return a non-empty, deterministic string.
+//   - The returned name MUST be suitable as a canonical identifier for the
+//     entity kind (type-level name, not per-instance).
+//   - NamerFunc implementations MUST be safe to call from multiple goroutines
+//     concurrently.
+//   - NamerFunc SHOULD avoid heap allocations and expensive work on the hot
+//     path, just like any other Namer implementation.
+//   - NamerFunc MUST NOT perform blocking operations or I/O.
+//
+// # Performance
+//
+// NamerFunc adds virtually no overhead compared to calling the underlying
+// function directly: EntityName is a single function call indirection with
+// no additional allocations under normal circumstances.
+type NamerFunc func() string
+
+// EntityName implements Namer for NamerFunc.
+//
+// # Semantics
+//
+// Calling EntityName on a NamerFunc is equivalent to invoking the underlying
+// function value directly. All contractual requirements of Namer apply to the
+// wrapped function:
+//
+//   - It MUST return a non-empty, deterministic, type-level name.
+//   - It MUST be safe for concurrent use by multiple goroutines.
+//   - It MUST NOT perform blocking I/O or long-running computations on the
+//     hot path.
+//   - It SHOULD keep per-call overhead minimal (ideally constant-time, with
+//     no heap allocations).
+//
+// # Notes
+//
+// If the underlying function performs caching or precomputation, that logic
+// SHOULD be implemented in a concurrency-safe manner (for example, using
+// package-level initialization or sync.Once) so that repeated calls to
+// EntityName remain cheap and predictable.
+func (f NamerFunc) EntityName() string {
+	return f()
+}
