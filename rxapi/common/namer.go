@@ -100,6 +100,93 @@ type Namer interface {
 	EntityName() string
 }
 
+// TypeNamer provides generic, type-aware naming for values of type T.
+//
+// # Overview
+//
+// TypeNamer is a generic, type-parametric naming interface. It allows
+// different naming strategies to be expressed in terms of a Go type parameter
+// `T`, while still producing canonical entity names that can be consumed by
+// the rfx reflection subsystem, registries, loggers, or metrics backends.
+//
+// Unlike Namer, which is typically implemented as a method on the entity
+// type itself, TypeNamer[T] separates:
+//
+//   - The *subject* being named (a value of type T), and
+//   - The *strategy* that decides how to derive its name.
+//
+// This is useful when:
+//
+//   - The same naming strategy should be reused across multiple types.
+//   - Name derivation needs to be configured or injected (for example,
+//     per module, per subsystem, or per environment).
+//   - You want to experiment with different naming policies without
+//     changing the entity types.
+//
+// Implementations MAY inspect both the static type T and the dynamic type
+// (when T is an interface), as well as selected aspects of the value v.
+// However, for use as canonical entity identifiers, names SHOULD be primarily
+// type-level and stable for a given concrete type.
+//
+// # Usage
+//
+// A typical pattern is to define a generic struct that implements TypeNamer
+// for any T:
+//
+//   type CustomNamer[T any] struct{}
+//
+//   func (n CustomNamer[T]) EntityName(v T) string {
+//       // Custom logic based on type T (and optionally v).
+//       return fmt.Sprintf("custom.%T", v)
+//   }
+//
+//   var namer TypeNamer[*User] = CustomNamer[*User]{}
+//   name := namer.EntityName(&User{ID: "123"}) // e.g. "custom.*rfx.User"
+//
+// Implementations MAY be adapted to Namer or other naming abstractions by
+// capturing a particular T and value category (for example, pointer vs value
+// receivers) and exposing a zero-argument, type-level EntityName.
+type TypeNamer[T any] interface {
+	// EntityName returns a canonical name for a value of type T.
+	//
+	// # Contract
+	//
+	//   - The returned name MUST be a valid entity name according to the
+	//     conventions used by the surrounding system (for example, the same
+	//     rules that apply to Namer).
+	//   - The returned name MUST be deterministic for a given input v.
+	//   - For canonical, type-level naming, the result SHOULD depend only on
+	//     the concrete type of v (including its dynamic type when T is an
+	//     interface), not on its mutable instance state.
+	//   - Implementations MUST be safe for concurrent calls from multiple
+	//     goroutines.
+	//
+	// # Performance and side-effects
+	//
+	//   - Implementations SHOULD keep per-call cost low (ideally O(1) with
+	//     respect to v), and SHOULD avoid unnecessary heap allocations.
+	//   - Implementations MUST NOT perform blocking operations or I/O in
+	//     EntityName.
+	//   - If computing the name requires reflection or string building,
+	//     implementations SHOULD precompute and cache reusable components
+	//     (for example, a type-based prefix) where feasible.
+	//
+	// # Semantics
+	//
+	// The returned name is suitable for use as:
+	//
+	//   - A canonical identifier for logging and metrics.
+	//   - A key in internal registries or caches.
+	//   - A routing or dispatch hint in higher-level frameworks.
+	//
+	// Callers MAY assume that names produced by a given TypeNamer[T] are
+	// consistent over the lifetime of the process, but they MUST NOT assume
+	// cross-process or cross-application compatibility unless explicitly
+	// documented by the implementation.
+	EntityName(v T) string
+}
+
+
 // NamerFunc adapts a plain function to the Namer interface.
 //
 // # Overview
